@@ -4,6 +4,7 @@ Credential-pooling gateways (e.g. CLIProxyAPI) answer 503 once every upstream cr
 model is spent. Same-model backoff cannot succeed, and the key to the gateway is healthy (other
 models still work), so the verdict falls back without benching it. Capacity 503/529s keep backing off.
 """
+import dataclasses
 import time
 from datetime import UTC, datetime
 from email.utils import format_datetime
@@ -197,10 +198,13 @@ def test_past_absolute_reset_defers_to_retry_after():
     assert before + 110 <= result.error_context["reset_at"] <= time.time() + 130
 
 
-@pytest.mark.parametrize("value", ["0001-01-01T00:00:00", "9999-12-31T23:59:59"])
-def test_out_of_range_absolute_reset_is_skipped_not_raised(value):
-    """.NET's ``DateTime.MinValue``/``MaxValue`` serialise naive; Windows cannot convert them to an epoch."""
-    body = {"error": {"code": "usage_limit_reached", "message": "Service Unavailable"}, "resets_at": value}
+@pytest.mark.parametrize("field, value", [
+    # .NET's ``DateTime.MinValue``/``MaxValue`` serialise naive; Windows cannot convert them to an epoch.
+    ("resets_at", "0001-01-01T00:00:00"), ("resets_at", "9999-12-31T23:59:59"),
+    ("resets_at", 10**400), ("resets_at", "inf"), ("resets_in_seconds", "inf"), ("retry_after", float("inf")),
+], ids=["min-iso", "max-iso", "huge-int", "inf-at", "inf-duration", "inf-retry-after"])
+def test_unusable_reset_is_skipped_not_raised(field, value):
+    body = {"error": {"code": "usage_limit_reached", "message": "Service Unavailable"}, field: value}
     before = time.time()
     result = _classify("Service Unavailable", 503, body=body, headers={"retry-after": "120"})
     assert before + 110 <= result.error_context["reset_at"] <= time.time() + 130
@@ -226,7 +230,45 @@ def test_effective_reset_at_prefers_a_valid_extracted_reset(extracted, expected)
 
     classified = SimpleNamespace(error_context={"reset_at": _FUTURE + 1})
     assert effective_reset_at(extracted, classified) == (_FUTURE + 1 if expected == "classifier" else expected)
+
+
+def test_effective_reset_at_without_any_reset_is_none():
+    from agent.fallback_cooldown import effective_reset_at
+
     assert effective_reset_at({"reset_at": "garbage"}, SimpleNamespace(error_context=None)) is None
+
+
+@pytest.mark.parametrize("site", ["non-retryable", "max-retries"])
+def test_unrecovered_error_fallback_gets_the_classifier_reset(monkeypatch, site):
+    """The non-retryable and max-retries-exhausted fallback sites hand off the same reset as the eager
+    one, e.g. after ``fallback.min_switch_reset_seconds`` or pool rotation skipped the eager switch."""
+    from agent import conversation_loop
+    from agent.turn_api_error import settle_unrecovered_error
+
+    monkeypatch.setattr(conversation_loop, "_arm_fallback_restart", lambda *args: "prompt")
+    monkeypatch.setattr(conversation_loop, "_is_copilot_provider", lambda *args: False)
+    seen = {}
+    agent = SimpleNamespace(
+        _has_pending_fallback=lambda: True, _buffer_diagnostic_status=lambda *_: None,
+        _try_activate_fallback=lambda **kwargs: seen.update(kwargs) or True,
+    )
+    error = _APIError(_POOL_WALL + "; resets in 1 hour", 503)
+    classified = classify_api_error(error, provider="custom", model="m")
+    if site == "non-retryable":
+        classified = dataclasses.replace(classified, retryable=False)
+    retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=True)
+    before = time.time()
+    verdict = settle_unrecovered_error(
+        agent, api_error=error, classified=classified, _retry=retry, status_code=503, error_msg=str(error),
+        is_context_length_error=False, is_rate_limited=True, _is_zai_coding_overload=False,
+        _provider="custom", _base="http://127.0.0.1:8317/v1", _model="m", messages=[], api_messages=[],
+        api_kwargs=None, active_system_prompt="", conversation_history=None, approx_tokens=10,
+        retry_count=3, max_retries=3, compression_attempts=0, api_call_count=3,
+        error_context={"reset_at": time.time() - 600},
+    )
+    assert verdict.action == "break"
+    assert seen["reason"] == FailoverReason.upstream_rate_limit
+    assert before + 3590 <= seen["reset_at"] <= time.time() + 3610
 
 
 @pytest.mark.parametrize("make_reset, headers, window", [

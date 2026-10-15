@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -1285,7 +1286,8 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
     """Seconds until a rate-limit/quota window reopens, from the body's reset fields, ``Retry-After`` or the
-    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none."""
+    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none. A non-finite
+    value ("inf") is skipped: it would bench the primary forever and crash the reset copy."""
     from agent.credential_pool_timestamps import _parse_absolute_timestamp
     from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
     for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
@@ -1297,13 +1299,16 @@ def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> O
                 # Absolute: epoch seconds/ms or ISO-8601, numeric or string (never a duration), else an
                 # HTTP-date. One already past says nothing about the next window: try the other signals.
                 at = _parse_absolute_timestamp(value)
-                seconds = at - time.time() if at is not None else parse_retry_after_seconds(value)
-                if seconds is not None and seconds > 0:
+                if at is not None:
+                    seconds = at - time.time()
+                else:
+                    seconds = parse_retry_after_seconds(value) if isinstance(value, str) else None
+                if seconds is not None and math.isfinite(seconds) and seconds > 0:
                     return seconds
                 continue
-            if (seconds := parse_retry_after_seconds(value)) is not None:
+            if (seconds := parse_retry_after_seconds(value)) is not None and math.isfinite(seconds):
                 return seconds
-    if (seconds := parse_retry_after_seconds(response_headers)) is not None:
+    if (seconds := parse_retry_after_seconds(response_headers)) is not None and math.isfinite(seconds):
         return seconds
     return reset_delay_from_message(error_msg)
 

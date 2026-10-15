@@ -11,7 +11,10 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
-        numeric = float(value)
+        try:
+            numeric = float(value)
+        except OverflowError:  # a JSON integer past float range
+            return None
         if numeric <= 0:
             return None
         return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric

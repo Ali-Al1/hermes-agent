@@ -205,8 +205,9 @@ def test_past_absolute_reset_defers_to_retry_after():
     ("resets_at", "2999-01-01T00:00:00+00:00"), ("resets_in_seconds", 40 * 86400),
     ("resets_at", 10**400), ("resets_in_seconds", 10**400),
     ("resets_at", "inf"), ("resets_in_seconds", "inf"), ("retry_after", float("inf")),
+    ("resets_at", "Fri, 01 Jan 100000000000000000000000 00:00:00 GMT"),
 ], ids=["min-iso", "max-iso", "far-future-at", "far-future-duration", "huge-int-at", "huge-int-duration",
-        "inf-at", "inf-duration", "inf-retry-after"])
+        "inf-at", "inf-duration", "inf-retry-after", "overflowing-http-date-at"])
 def test_unusable_reset_is_skipped_not_raised(field, value):
     body = {"error": {"code": "usage_limit_reached", "message": "Service Unavailable"}, field: value}
     before = time.time()

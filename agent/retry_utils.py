@@ -58,7 +58,7 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.
     try:
         when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: a year too large for datetime
         return None
     if when is None:  # older stdlib returns None instead of raising
         return None

@@ -215,8 +215,9 @@ def test_unusable_reset_is_skipped_not_raised(field, value):
 
 
 @pytest.mark.parametrize("headers, suffix", [
-    ({"retry-after": "inf"}, ""), ({}, "; retry after " + "9" * 400 + " seconds"),
-], ids=["inf-header", "inf-message"])
+    ({"retry-after": "inf"}, ""), ({"retry-after": str(40 * 86400)}, ""),
+    ({}, "; retry after " + "9" * 400 + " seconds"), ({}, "; resets in 1000 hours"),
+], ids=["inf-header", "far-future-header", "inf-message", "far-future-message"])
 def test_unusable_header_or_message_reset_is_skipped(headers, suffix):
     result = _classify(_POOL_WALL + suffix, 503, headers=headers)
     _assert_falls_back_without_benching(result)
@@ -235,8 +236,9 @@ def test_429_reads_absolute_reset_as_an_instant(make_reset):
 
 
 @pytest.mark.parametrize("extracted, expected", [
-    ({"reset_at": _FUTURE}, _FUTURE), ({"reset_at": "garbage"}, "classifier"), (None, "classifier"),
-], ids=["valid-extracted", "invalid-extracted", "no-context"])
+    ({"reset_at": _FUTURE}, _FUTURE), ({"reset_at": "garbage"}, "classifier"),
+    ({"reset_at": "2999-01-01T00:00:00+00:00"}, "classifier"), (None, "classifier"),
+], ids=["valid-extracted", "invalid-extracted", "sentinel-extracted", "no-context"])
 def test_effective_reset_at_prefers_a_valid_extracted_reset(extracted, expected):
     """Shared by every fallback site (eager, non-retryable, max-retries exhausted)."""
     from agent.fallback_cooldown import effective_reset_at
@@ -291,7 +293,8 @@ def test_unrecovered_error_fallback_gets_the_classifier_reset(monkeypatch, site)
     (lambda now: int(now - 600), {"retry-after": "120"}, 120),
     (lambda now: str(int(now - 600)), {"retry-after": "120"}, 120),
     (lambda now: format_datetime(datetime.fromtimestamp(now + 3600, UTC), usegmt=True), {}, 3600),
-], ids=["past-epoch", "past-string-epoch", "future-http-date"])
+    (lambda now: "2999-01-01T00:00:00+00:00", {"retry-after": "120"}, 120),
+], ids=["past-epoch", "past-string-epoch", "future-http-date", "far-future-sentinel"])
 def test_eager_fallback_ignores_an_extracted_reset_that_is_not_a_future_instant(
     monkeypatch, make_reset, headers, window
 ):

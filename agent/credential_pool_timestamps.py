@@ -26,6 +26,7 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
             pass
         try:
             return datetime.fromisoformat(raw).timestamp()
-        except ValueError:
+        except (ValueError, OverflowError, OSError):
+            # OSError: Windows' local-time conversion of a naive out-of-range value ("0001-01-01T00:00:00").
             return None
     return None

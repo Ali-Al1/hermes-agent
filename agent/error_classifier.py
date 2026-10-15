@@ -1105,12 +1105,16 @@ def _status_503_529(c: _Ctx) -> Verdict:
     # model is spent: "auth_unavailable: no auth available (...; last upstream error:
     # usage_limit_reached ...)". Retrying the same model cannot succeed, but our key to the gateway is
     # healthy (it serves other models), so fall back without benching it, like the aggregator 429 path.
+    # A direct provider's own key/billing wall on a 5xx also lands here: falling back still beats
+    # backing off, at the cost of the pool rotation a 4xx billing verdict would get.
     if (
         c.code == "usage_limit_reached" or c.code in _BILLING_ERROR_CODES
         or any(p in c.msg for p in _5XX_QUOTA_WALL_PATTERNS)
     ):
         reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
         ctx = {"reset_at": time.time() + reset} if reset else {}
+        if _is_openrouter_upstream_error(c.body, c.provider_slug) and (upstream := _extract_upstream_provider_name(c.body)):
+            ctx["upstream_provider"] = upstream
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
     return _V_OVERLOADED
 

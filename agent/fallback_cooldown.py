@@ -21,6 +21,15 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
+def effective_reset_at(error_context, classified):
+    """The extracted ``reset_at`` when it is a valid future instant, else the classifier's, which also
+    reads body reset fields, ``Retry-After`` and the message in every timestamp form."""
+    reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+    if _provider_reset_delay(reset_at) is None:
+        reset_at = (getattr(classified, "error_context", None) or {}).get("reset_at")
+    return reset_at
+
+
 def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so

@@ -163,7 +163,12 @@ class ProfileOwnership:
                     try:
                         if not _try_acquire_file_lock(handle) or not _still_names(path, handle.fileno()):
                             raise OwnershipConflict(f'Gateway runtime already owns profile {home}')
-                        record = {**_build_pid_record(), 'hermes_home': str(home)}
+                        base = _build_pid_record()
+                        # A multiplexer stamps its identity into every member home it reserves;
+                        # launch_home tells its own home's record from a member's.
+                        launch = base.get('hermes_home')
+                        record = {**base, 'hermes_home': str(home),
+                                  'launch_home': str(canonical_home(launch)) if launch else None}
                         handle.seek(0)
                         handle.truncate()
                         json.dump(record, handle)

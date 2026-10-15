@@ -201,8 +201,9 @@ def test_past_absolute_reset_defers_to_retry_after():
 @pytest.mark.parametrize("field, value", [
     # .NET's ``DateTime.MinValue``/``MaxValue`` serialise naive; Windows cannot convert them to an epoch.
     ("resets_at", "0001-01-01T00:00:00"), ("resets_at", "9999-12-31T23:59:59"),
-    ("resets_at", 10**400), ("resets_at", "inf"), ("resets_in_seconds", "inf"), ("retry_after", float("inf")),
-], ids=["min-iso", "max-iso", "huge-int", "inf-at", "inf-duration", "inf-retry-after"])
+    ("resets_at", 10**400), ("resets_in_seconds", 10**400),
+    ("resets_at", "inf"), ("resets_in_seconds", "inf"), ("retry_after", float("inf")),
+], ids=["min-iso", "max-iso", "huge-int-at", "huge-int-duration", "inf-at", "inf-duration", "inf-retry-after"])
 def test_unusable_reset_is_skipped_not_raised(field, value):
     body = {"error": {"code": "usage_limit_reached", "message": "Service Unavailable"}, field: value}
     before = time.time()
@@ -247,15 +248,17 @@ def test_unrecovered_error_fallback_gets_the_classifier_reset(monkeypatch, site)
 
     monkeypatch.setattr(conversation_loop, "_arm_fallback_restart", lambda *args: "prompt")
     monkeypatch.setattr(conversation_loop, "_is_copilot_provider", lambda *args: False)
-    seen = {}
+    seen, statuses = {}, []
     agent = SimpleNamespace(
-        _has_pending_fallback=lambda: True, _buffer_diagnostic_status=lambda *_: None,
+        _has_pending_fallback=lambda: True, _buffer_diagnostic_status=statuses.append,
         _try_activate_fallback=lambda **kwargs: seen.update(kwargs) or True,
     )
     error = _APIError(_POOL_WALL + "; resets in 1 hour", 503)
     classified = classify_api_error(error, provider="custom", model="m")
     if site == "non-retryable":
-        classified = dataclasses.replace(classified, retryable=False)
+        # upstream_rate_limit is a retryable client reason, so it never reaches this site: drive it
+        # with a billing verdict carrying the same classifier reset.
+        classified = dataclasses.replace(classified, reason=FailoverReason.billing, retryable=False)
     retry = SimpleNamespace(copilot_stale_cred_retry_attempted=False, primary_recovery_attempted=True)
     before = time.time()
     verdict = settle_unrecovered_error(
@@ -263,11 +266,12 @@ def test_unrecovered_error_fallback_gets_the_classifier_reset(monkeypatch, site)
         is_context_length_error=False, is_rate_limited=True, _is_zai_coding_overload=False,
         _provider="custom", _base="http://127.0.0.1:8317/v1", _model="m", messages=[], api_messages=[],
         api_kwargs=None, active_system_prompt="", conversation_history=None, approx_tokens=10,
-        retry_count=3, max_retries=3, compression_attempts=0, api_call_count=3,
-        error_context={"reset_at": time.time() - 600},
+        retry_count=0 if site == "non-retryable" else 3, max_retries=3, compression_attempts=0,
+        api_call_count=3, error_context={"reset_at": time.time() - 600},
     )
     assert verdict.action == "break"
-    assert seen["reason"] == FailoverReason.upstream_rate_limit
+    assert ("Max retries" in statuses[-1]) == (site == "max-retries")
+    assert seen["reason"] == classified.reason
     assert before + 3590 <= seen["reset_at"] <= time.time() + 3610
 
 

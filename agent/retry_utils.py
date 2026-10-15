@@ -44,7 +44,10 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return max(0.0, float(raw))
+        try:
+            return max(0.0, float(raw))
+        except OverflowError:  # a JSON integer past float range
+            return None
     text = str(raw).strip()
     if not text:
         return None

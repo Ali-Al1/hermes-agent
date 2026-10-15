@@ -1310,7 +1310,8 @@ def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> O
                 return seconds
     if (seconds := parse_retry_after_seconds(response_headers)) is not None and math.isfinite(seconds):
         return seconds
-    return reset_delay_from_message(error_msg)
+    seconds = reset_delay_from_message(error_msg)
+    return seconds if seconds is not None and math.isfinite(seconds) else None
 
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:

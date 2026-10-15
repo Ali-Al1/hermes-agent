@@ -199,16 +199,28 @@ def test_past_absolute_reset_defers_to_retry_after():
 
 
 @pytest.mark.parametrize("field, value", [
-    # .NET's ``DateTime.MinValue``/``MaxValue`` serialise naive; Windows cannot convert them to an epoch.
+    # .NET's ``DateTime.MinValue``/``MaxValue`` sentinels serialise naive. Windows cannot convert them to
+    # an epoch at all; elsewhere MaxValue parses, centuries out.
     ("resets_at", "0001-01-01T00:00:00"), ("resets_at", "9999-12-31T23:59:59"),
+    ("resets_at", "2999-01-01T00:00:00+00:00"), ("resets_in_seconds", 40 * 86400),
     ("resets_at", 10**400), ("resets_in_seconds", 10**400),
     ("resets_at", "inf"), ("resets_in_seconds", "inf"), ("retry_after", float("inf")),
-], ids=["min-iso", "max-iso", "huge-int-at", "huge-int-duration", "inf-at", "inf-duration", "inf-retry-after"])
+], ids=["min-iso", "max-iso", "far-future-at", "far-future-duration", "huge-int-at", "huge-int-duration",
+        "inf-at", "inf-duration", "inf-retry-after"])
 def test_unusable_reset_is_skipped_not_raised(field, value):
     body = {"error": {"code": "usage_limit_reached", "message": "Service Unavailable"}, field: value}
     before = time.time()
     result = _classify("Service Unavailable", 503, body=body, headers={"retry-after": "120"})
     assert before + 110 <= result.error_context["reset_at"] <= time.time() + 130
+
+
+@pytest.mark.parametrize("headers, suffix", [
+    ({"retry-after": "inf"}, ""), ({}, "; retry after " + "9" * 400 + " seconds"),
+], ids=["inf-header", "inf-message"])
+def test_unusable_header_or_message_reset_is_skipped(headers, suffix):
+    result = _classify(_POOL_WALL + suffix, 503, headers=headers)
+    _assert_falls_back_without_benching(result)
+    assert result.error_context == {}
 
 
 @pytest.mark.parametrize("make_reset", [lambda at: int(at * 1000), lambda at: str(int(at))],

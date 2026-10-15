@@ -1269,6 +1269,9 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 _RESET_FIELDS = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+# Longest real quota window (monthly). A reset further out is a sentinel (.NET ``DateTime.MaxValue``)
+# or garbage, and would bench the primary for centuries.
+_MAX_RESET_SECONDS = 31 * 86400
 _RESET_HEADERS = ("retry-after", "Retry-After", "x-ratelimit-reset", "X-RateLimit-Reset")
 
 
@@ -1286,8 +1289,9 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
     """Seconds until a rate-limit/quota window reopens, from the body's reset fields, ``Retry-After`` or the
-    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none. A non-finite
-    value ("inf") is skipped: it would bench the primary forever and crash the reset copy."""
+    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none. A value
+    that is non-finite ("inf") or beyond ``_MAX_RESET_SECONDS`` is skipped: it would bench the primary for
+    good and crash the reset copy."""
     from agent.credential_pool_timestamps import _parse_absolute_timestamp
     from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
     for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
@@ -1303,15 +1307,19 @@ def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> O
                     seconds = at - time.time()
                 else:
                     seconds = parse_retry_after_seconds(value) if isinstance(value, str) else None
-                if seconds is not None and math.isfinite(seconds) and seconds > 0:
+                if _plausible_reset(seconds) and seconds > 0:
                     return seconds
                 continue
-            if (seconds := parse_retry_after_seconds(value)) is not None and math.isfinite(seconds):
+            if _plausible_reset(seconds := parse_retry_after_seconds(value)):
                 return seconds
-    if (seconds := parse_retry_after_seconds(response_headers)) is not None and math.isfinite(seconds):
+    if _plausible_reset(seconds := parse_retry_after_seconds(response_headers)):
         return seconds
     seconds = reset_delay_from_message(error_msg)
-    return seconds if seconds is not None and math.isfinite(seconds) else None
+    return seconds if _plausible_reset(seconds) else None
+
+
+def _plausible_reset(seconds: Optional[float]) -> bool:
+    return seconds is not None and math.isfinite(seconds) and seconds <= _MAX_RESET_SECONDS
 
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:

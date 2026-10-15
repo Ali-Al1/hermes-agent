@@ -1282,7 +1282,7 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
     """Seconds until a rate-limit/quota window reopens, from the body's reset fields, ``Retry-After`` or the
     message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_timestamps import _parse_absolute_timestamp
     from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
     for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
         for name in _RESET_FIELDS:

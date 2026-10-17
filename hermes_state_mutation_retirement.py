@@ -1,9 +1,11 @@
 """Durable deletion fences outside prunable transcript rows."""
 import json
 import time
-from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, _json, _text
+from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
+# A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
+VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
 
 def retired_session(db, session_id):
@@ -15,8 +17,8 @@ def retired_session(db, session_id):
 def has_mutation_receipt(db, principal_id, session_id, request_id):
     for value in (principal_id, session_id, request_id):
         _text(value)
-    key = 'gateway.mutation.v1.' + admission_fingerprint(
-        canonical_target=session_id, payload={'principal': principal_id, 'request': request_id})
+    key, _digest = mutation_receipt_key(principal_id, session_id, request_id, operation='model', payload={},
+                                        expected_revision=0)
     with db._read_ctx() as conn:
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is not None
 
@@ -95,6 +97,8 @@ def retire_sessions(conn, session_ids):
     accounting/constructor backfill recreates the deleted row, and the same request is then
     admitted a second time against it. Every delete path (canonical mutate, legacy
     ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
+    from hermes_state_media import retire_spillover
+    retire_spillover(conn, session_ids)  # before the caller's DELETEs take the pointers away
     retire_terminal_receipts(conn, session_ids)
     retire_mutation_receipts(conn, session_ids)
     retire_routes(conn, session_ids)
@@ -198,6 +202,7 @@ def retire_routes(conn, session_ids):
         conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                      (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
+        conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:
